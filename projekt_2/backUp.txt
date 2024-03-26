@@ -1,0 +1,638 @@
+#include <minmax.h>
+
+#include "block.h"
+
+using namespace std;
+
+/*
+        AddAfter dla iteratorow szwankuje? Mozliwe ze to problem z przypadkiem isBlockFull
+        Dodaj dealokowanie pamieci na koniec.
+
+        W ustawieniach projektu wylaczony security check.
+
+        Struktura bloku:
+        4 B - wskaznik na nastepny
+        4 B - wskaznik na poprzedni
+        4 B - liczba elementow w tym bloku
+        4 B - wypelnienie, zeby offset byl podzielny przez 8
+        8 B x n - elementy
+
+        Iterator - zwykly wskaznik na element ( miejsce w pamieci po ktorym jest element zapisany.
+        Przy kazdym ruszaniu elementow funkcja sprawdzajaca czy nie zmienia to czegos dla iteratorow. ( poczatek bloku <= iterator && iterator <= koniec bloku ).
+        ^ bez sensu i tak zeby poznac kontekst trzeba bedzie przeiterowac po wszystkich blokach
+        Lepiej pamietac po prostu nr elementu, duzo prostsze w implementacji i zarzadzaniu.
+*/
+
+constexpr int numOfIterators = 10;
+constexpr int MaxNumberLength = 20;
+
+void checkForOptimalAllocation( uint8_t*& head, uint8_t*& tail, int blockSize );
+void incrementIterators( int* t, int after );
+void decrementIterators( int* t, int after );
+void addBehind( uint8_t*& head, uint8_t*& tail, int blockSize, uint8_t* where, uint64_t value );
+void addAfter( uint8_t*& head, uint8_t*& tail, int blockSize, uint8_t* where, uint64_t value );
+void removeElement( uint8_t*& head, uint8_t*& tail, int blockSize, uint8_t* where );
+void printAll( uint8_t* head, int blockSize );
+
+int main()
+{
+        char command[2];
+        int iterators[numOfIterators];
+        for (int i = 0; i < numOfIterators; i++)
+                iterators[i] = -1;
+
+        uint8_t* head = nullptr, * tail = nullptr;
+
+        cin >> command;
+
+        int blockSize;
+        cin >> blockSize;
+
+        while (cin >> command)
+        {
+                if (!strcmp( command, "i" ))
+                {
+                        int iterator;
+                        char position[MaxNumberLength];
+
+                        cin >> iterator >> position;
+
+                        if (!strcmp( position, "BEG" ))
+                        {
+                                iterators[iterator] = 0;
+                        }
+                        else if (!strcmp( position, "END" ))
+                        {
+                                iterators[iterator] = getTotalNumberOfElements( head ) - 1;
+                        }
+                        else
+                        {
+                                int pos = strtol( position, nullptr, 0 );
+                                iterators[iterator] = iterators[pos];
+                        }
+                }
+                else if (!strcmp( command, "+" ))
+                {
+                        int iterator;
+                        cin >> iterator;
+                        iterators[iterator] = min( iterators[iterator] + 1, getTotalNumberOfElements( head ) );
+                }
+                else if (!strcmp( command, "-" ))
+                {
+                        int iterator;
+                        cin >> iterator;
+                        iterators[iterator] = max( iterators[iterator] - 1, 0 );
+                }
+                else if (!strcmp( command, ".A" ))
+                {
+                        uint64_t value;
+                        char iterator[MaxNumberLength];
+                        cin >> iterator >> value;
+
+                        if (!strcmp( iterator, "BEG" ))
+                        {
+                                addBehind( head, tail, blockSize, head + offset, value );
+                                incrementIterators( iterators, -1 );
+                        }
+                        else if (!strcmp( iterator, "END" ))
+                        {
+                                addBehind( head, tail, blockSize, getLastElementPointer( tail ), value );
+                                incrementIterators( iterators, getTotalNumberOfElements( head ) - 2 );
+                        }
+                        else
+                        {
+                                int i = strtol( iterator, nullptr, 0 );
+                                addBehind( head, tail, blockSize, getElementPointer( head, iterators[i] ), value );
+                                incrementIterators( iterators, iterators[i] - 1 );
+                        }
+                }
+                else if (!strcmp( command, "A." ))
+                {
+                        uint64_t value;
+                        char iterator[MaxNumberLength];
+                        cin >> iterator >> value;
+
+                        if (!strcmp( iterator, "BEG" ))
+                        {
+                                addAfter( head, tail, blockSize, head + offset - elementSize, value );
+                                incrementIterators( iterators, 0 );
+                        }
+                        else if (!strcmp( iterator, "END" ))
+                        {
+                                addAfter( head, tail, blockSize, getLastElementPointer( tail ), value );
+                                // No incrementing necessary
+                        }
+                        else
+                        {
+                                int i = strtol( iterator, nullptr, 0 );
+                                addAfter( head, tail, blockSize, getElementPointer( head, iterators[i] ), value );
+                                incrementIterators( iterators, iterators[i] );
+                        }
+                }
+                else if (!strcmp( command, "R" ))
+                {
+                        char iterator[MaxNumberLength];
+                        cin >> iterator;
+                        if (!strcmp( iterator, "BEG" ))
+                        {
+                                removeElement( head, tail, blockSize, head + offset );
+                                decrementIterators( iterators, 0 );
+                        }
+                        else if (!strcmp( iterator, "END" ))
+                        {
+                                removeElement( head, tail, blockSize, getLastElementPointer( tail ) );
+                                decrementIterators( iterators, getTotalNumberOfElements( head ) - 1 );
+                        }
+                        else
+                        {
+                                int i = strtol( iterator, nullptr, 0 );
+                                removeElement( head, tail, blockSize, getElementPointer( head, iterators[i] ) );
+                                decrementIterators( iterators, min( getTotalNumberOfElements( head ) - 1, iterators[i] ) );
+                        }
+                }
+                else if (!strcmp( command, "P" ))
+                {
+                        char iterator[MaxNumberLength];
+                        cin >> iterator;
+                        if (!strcmp( iterator, "ALL" ))
+                        {
+                                printAll( head, blockSize );
+                        }
+                        else
+                        {
+                                int i = strtol( iterator, nullptr, 0 );
+                                uint64_t val;
+                                memcpy( &val, getElementPointer( head, iterators[i] ), elementSize );
+                                cout << val << endl;
+                        }
+                }
+        }
+
+        return 0;
+}
+
+void checkForOptimalAllocation( uint8_t*& head, uint8_t*& tail, int blockSize )
+{
+        int totalNumOfElements = getNumberOfElements( head ), maxDiff = 0,
+                previousNum = getNumberOfElements( head ), numOfBlocks = 1,
+                maxNumPerBlock = (blockSize - offset) / elementSize;
+        uint8_t* current = getNext( head );
+
+        while (current)
+        {
+                int numOfEl = getNumberOfElements( current );
+                totalNumOfElements += numOfEl;
+                if (abs( numOfEl - previousNum ) > maxDiff)
+                        maxDiff = abs( numOfEl - previousNum );
+
+                numOfBlocks++;
+                current = getNext( current );
+        }
+
+        bool tooManyBlocks = ((numOfBlocks > 1) && (totalNumOfElements / (numOfBlocks - 1) < maxNumPerBlock));
+
+        if (maxDiff > 1 || tooManyBlocks)
+        {
+                int numOfElementsPerBlock, remainder;
+                if (tooManyBlocks)
+                {
+                        numOfElementsPerBlock = totalNumOfElements / (numOfBlocks - 1);
+                        remainder = totalNumOfElements % (numOfBlocks - 1);
+                }
+                else
+                {
+                        numOfElementsPerBlock = totalNumOfElements / numOfBlocks;
+                        remainder = totalNumOfElements % numOfBlocks;
+                }
+                current = head;
+                while (current)
+                {
+                        int numOfEl = getNumberOfElements( current );
+                        uint8_t* next = getNext( current );
+                        if (tooManyBlocks && next == nullptr)
+                        {
+                                tail = getPrev( current );
+                                deleteBlock( current );
+                                break;
+                        }
+                        if (numOfEl < numOfElementsPerBlock + (remainder > 0 ? 1 : 0) && next)
+                        {
+                                // Get some from the next one
+
+                                int howMuch = numOfElementsPerBlock + (remainder > 0 ? 1 : 0) - numOfEl;
+                                uint32_t numOfElInNext = getNumberOfElements( next ) - howMuch;
+
+                                memcpy( current + offset + elementSize * numOfEl, next + offset, howMuch * elementSize ); // Copy from next
+                                memcpy( next + offset, next + offset + howMuch * elementSize, numOfElInNext * elementSize ); // Move elements in the next block forward
+
+                                uint32_t newNumOfEl = howMuch + numOfEl; // Update number of elements in the current block
+                                setNumberOfElements( current, newNumOfEl );
+
+                                setNumberOfElements( next, numOfElInNext ); // Update number of elements in the next block
+
+                                if (remainder != 0)
+                                        remainder--;
+                        }
+                        else if (numOfEl > numOfElementsPerBlock + (remainder > 0 ? 1 : 0) && next)
+                        {
+                                // Give some to the next one
+
+                                int howMuch = numOfEl - (numOfElementsPerBlock + (remainder > 0 ? 1 : 0));
+
+                                memcpy( next + offset + howMuch * elementSize, next + offset, getNumberOfElements( next ) * elementSize ); // Move elements in the next forward
+                                memcpy( next + offset, current + offset + (numOfEl - howMuch) * elementSize, howMuch * elementSize ); // Copy to next
+
+                                uint32_t newNumOfEl = numOfEl - howMuch; // Update number of elements in the current block
+                                setNumberOfElements( current, newNumOfEl );
+
+                                uint32_t numOfElInNext = getNumberOfElements( next ) + howMuch; // Update number of elements in the next block
+                                setNumberOfElements( next, numOfElInNext );
+
+                                if (remainder != 0)
+                                        remainder--;
+                        }
+                        else
+                        {
+                                if (remainder != 0)
+                                        remainder--;
+                        }
+                        // Otherwise it's exactly how it should be
+
+                        current = next;
+                }
+        }
+}
+
+void incrementIterators( int* t, int after )
+{
+        for (int i = 0; i < numOfIterators; i++)
+        {
+                if (t[i] > after)
+                        t[i]++;
+        }
+}
+
+void decrementIterators( int* t, int after )
+{
+        for (int i = 0; i < numOfIterators; i++)
+        {
+                if (t[i] > after)
+                        t[i]--;
+        }
+}
+
+void addBehind( uint8_t*& head, uint8_t*& tail, int blockSize, uint8_t* where, uint64_t value )
+{
+        // If list isn't initialized
+        if (head == nullptr)
+        {
+                createNewBlock( head, blockSize );
+                tail = head;
+                where = head + offset;
+        }
+
+        // Check what block
+        uint8_t* block = findBlock( head, where, blockSize );
+
+        // Check if block not full, if full just create a new one, elemnts will be reallocated in the last step
+        if (isBlockFull( block, blockSize ))
+        {
+                createNewBlock( head, blockSize, block );
+                uint8_t* next = block;
+                block = getPrev( block );
+
+                memcpy( block + offset, next + offset, where - (next + offset) ); // Copying elements to the new block
+                memcpy( next + offset, where, blockSize - (where - next) ); // Moving elements back
+
+                uint32_t numOfElementsMoved = (where - (next + offset)) / elementSize;
+                setNumberOfElements( block, numOfElementsMoved );
+                setNumberOfElements( next, getNumberOfElements(next) - numOfElementsMoved );
+
+                where = getLastElementPointer( block ) + elementSize;
+        }
+
+        memcpy( where + elementSize, where, blockSize - (where + elementSize - block) ); // Moving elements forward to make space
+        memcpy( where, &value, elementSize ); // Placing element
+
+        // Incrementing number of elements in the block
+        incrementNumberOfElements( block );
+
+        // Check if there isn't a need to reallocate elements in blocks
+        checkForOptimalAllocation( head, tail, blockSize );
+}
+
+void addAfter( uint8_t*& head, uint8_t*& tail, int blockSize, uint8_t* where, uint64_t value )
+{
+        // If list isn't initialized
+        if (head == nullptr)
+        {
+                createNewBlock( head, blockSize );
+                tail = head;
+                where = head + offset - elementSize;
+        }
+
+        // Check what block
+        uint8_t* block = findBlock( head, where, blockSize );
+
+        // Check if block not full, if full just create a new one, elemnts will be reallocated in the last step
+        if (isBlockFull( block, blockSize )) //! Works only for the last element in the block!
+        {
+                createNewBlockAfter( tail, blockSize, block );
+                uint8_t* next = getNext( block );
+
+                memcpy( next + offset, where + elementSize, blockSize - (where + elementSize - block) ); // Copying to the new block that was created in front
+
+                uint32_t numOfElementsMoved = (blockSize - (where + elementSize - block)) / elementSize;
+                setNumberOfElements( block, getNumberOfElements( block ) - numOfElementsMoved );
+                setNumberOfElements( next, numOfElementsMoved );
+
+                where = next + offset - elementSize;
+                block = next;
+        }
+
+        memcpy( where + 2 * elementSize, where + elementSize, blockSize - (where + 2 * elementSize - block) ); // Moving elements forward to make space. Na pewno *2 przy elSize?
+        memcpy( where + elementSize, &value, elementSize ); // Placing element
+
+        // Incrementing number of elements in the block
+        incrementNumberOfElements( block );
+
+        // Check if there isn't a need to reallocate elements in blocks
+        checkForOptimalAllocation( head, tail, blockSize );
+}
+
+void removeElement( uint8_t*& head, uint8_t*& tail, int blockSize, uint8_t* where )
+{
+        // Check what block
+        uint8_t* block = findBlock( head, where, blockSize );
+
+        memcpy( where, where + elementSize, blockSize - (where + elementSize - block) ); // Moving elements back
+
+        decrementNumberOfElements( block );
+
+        checkForOptimalAllocation( head, tail, blockSize );
+}
+
+void printAll( uint8_t* head, int blockSize )
+{
+        uint8_t* current = head;
+        int i = 0;
+
+        while (current)
+        {
+                //cout << "Block " << i << ":" << endl;
+                for (int i = 0; i < getNumberOfElements( current ); i++)
+                {
+                        cout << getElement( current, i ) << ' ';
+                }
+                current = getNext( current );
+                //cout << endl;
+                i++;
+        }
+        cout << endl;
+}
+
+#pragma once
+
+#include <iostream>
+
+constexpr int offset = 16;
+constexpr int prevOffset = 4;
+constexpr int numOffset = 8;
+constexpr int intSize = 4;
+constexpr int pointerSize = 4;
+constexpr int elementSize = 8;
+
+uint8_t* initBlock( int size );
+void deleteBlock( uint8_t* block );
+void createNewBlock( uint8_t*& head, int blockSize/*, int &numberOfBlocks*/ );
+void createNewBlock( uint8_t*& head, int blockSize/*, int &numberOfBlocks*/, uint8_t* blockInFront );
+void createNewBlockAfter( uint8_t*& tail, int blockSize/*, int &numberOfBlocks*/, uint8_t* blockBehind );
+uint8_t* findBlock( uint8_t* head, int numberOfBlock );
+uint8_t* findBlock( uint8_t* head, uint8_t* pointer, int blockSize );
+uint8_t* getNext( uint8_t* block );
+uint8_t* getPrev( uint8_t* block );
+uint32_t getNumberOfElements( uint8_t* block );
+int getTotalNumberOfElements( uint8_t* head );
+uint64_t getElement( uint8_t* block, int number );
+uint8_t* getElementPointer( uint8_t* head, int number );
+uint8_t* getLastElementPointer( uint8_t* block );
+void setNext( uint8_t* block, uint8_t* next );
+void setPrev( uint8_t* block, uint8_t* prev );
+bool isBlockFull( uint8_t* block, int blockSize );
+void incrementNumberOfElements( uint8_t* block );
+void decrementNumberOfElements( uint8_t* block );
+void setNumberOfElements( uint8_t* block, uint32_t num );
+
+#include "block.h"
+
+uint8_t* initBlock( int size )
+{
+        uint8_t* block = (uint8_t*)malloc( size );
+        memset( block, 0, size );
+
+        return block;
+}
+
+void deleteBlock( uint8_t* block )
+{
+        uint8_t* prev = getPrev( block ), * next = getNext( block );
+        if (prev)
+                setNext( prev, next );
+        if (next)
+                setPrev( next, prev );
+
+        free( block );
+}
+
+void createNewBlock( uint8_t*& head, int blockSize/*, int &numberOfBlocks*/ )
+{
+        /* numberOfBlocks++; */
+        uint8_t* newBlock = initBlock( blockSize );
+        head = newBlock;
+}
+
+void createNewBlock( uint8_t*& head, int blockSize/*, int &numberOfBlocks*/, uint8_t* blockInFront )
+{
+        /* numberOfBlocks++; */
+        uint8_t* newBlock = initBlock( blockSize );
+        uint8_t* prev = nullptr;
+        uint8_t* next = blockInFront;
+        if (next)
+                prev = getPrev( next );
+
+        if (prev)
+                setNext( prev, newBlock );
+        if (next)
+                setPrev( next, newBlock );
+
+        setNext( newBlock, next );
+        setPrev( newBlock, prev );
+
+        if (head == nullptr)
+                head = newBlock;
+
+        if (head == blockInFront)
+                head = newBlock;
+}
+
+void createNewBlockAfter( uint8_t*& tail, int blockSize/*, int &numberOfBlocks*/, uint8_t* blockBehind )
+{
+        /* numberOfBlocks++; */
+        uint8_t* newBlock = initBlock( blockSize );
+        uint8_t* prev = blockBehind;
+        uint8_t* next = nullptr;
+        if (prev)
+                next = getNext( prev );
+
+        if (prev)
+                setNext( prev, newBlock );
+        if (next)
+                setPrev( next, newBlock );
+
+        setNext( newBlock, next );
+        setPrev( newBlock, prev );
+
+        if (tail == nullptr)
+                tail = newBlock;
+
+        if (tail == blockBehind)
+                tail = newBlock;
+}
+
+uint8_t* findBlock( uint8_t* head, int numberOfBlock )
+{
+        uint8_t* result = head;
+
+        for (int i = 0; i < numberOfBlock; i++)
+        {
+                result = getNext( result );
+        }
+
+        if (result == nullptr)
+        {
+                std::cout << "HALKO";
+                exit( 1 );
+        }
+
+        return result;
+}
+
+uint8_t* findBlock( uint8_t* head, uint8_t* pointer, int blockSize )
+{
+        uint8_t* result = head;
+
+        while (!(result <= pointer && pointer <= result + blockSize))
+        {
+                result = getNext( result );
+        }
+
+        if (result == nullptr)
+        {
+                std::cout << "HALKO";
+                exit( 1 );
+        }
+
+        return result;
+}
+
+uint8_t* getNext( uint8_t* block )
+{
+        uint8_t* next;
+        memcpy( &next, block, pointerSize );
+        return next;
+}
+
+uint8_t* getPrev( uint8_t* block )
+{
+        uint8_t* prev;
+        memcpy( &prev, block + prevOffset, pointerSize );
+        return prev;
+}
+
+uint32_t getNumberOfElements( uint8_t* block )
+{
+        return *((uint32_t*)(block + numOffset));
+}
+
+int getTotalNumberOfElements( uint8_t* head )
+{
+        int result = 0;
+        uint8_t* current = head;
+
+        while (current)
+        {
+                result += getNumberOfElements( current );
+                current = getNext( current );
+        }
+
+        return result;
+}
+
+uint64_t getElement( uint8_t* block, int number )
+{
+        return *((uint64_t*)(block + offset + elementSize * number));
+}
+
+uint8_t* getElementPointer( uint8_t* head, int number )
+{
+        int sum = 0;
+        uint8_t* current = head;
+
+        while (current)
+        {
+                int currentNumOfEl = getNumberOfElements( current );
+
+                if (sum + currentNumOfEl > number)
+                {
+                        return current + offset + (number - sum) * elementSize;
+                }
+
+                sum += currentNumOfEl;
+                current = getNext( current );
+        }
+
+        return nullptr;
+}
+
+uint8_t* getLastElementPointer( uint8_t* block )
+{
+        int numOfEl;
+        if (block)
+                numOfEl = getNumberOfElements( block );
+        else
+                numOfEl = 0;
+
+        return block + offset + (numOfEl - 1) * elementSize;
+}
+
+void setNext( uint8_t* block, uint8_t* next )
+{
+        memcpy( block, &next, pointerSize );
+}
+
+void setPrev( uint8_t* block, uint8_t* prev )
+{
+        memcpy( block + prevOffset, &prev, pointerSize );
+}
+
+bool isBlockFull( uint8_t* block, int blockSize )
+{
+        return getNumberOfElements( block ) >= (blockSize - offset) / elementSize ? true : false;
+}
+
+void incrementNumberOfElements( uint8_t* block )
+{
+        uint32_t numberOfEl = getNumberOfElements( block ) + 1;
+        memcpy( block + numOffset, &numberOfEl, intSize );
+}
+
+void decrementNumberOfElements( uint8_t* block )
+{
+        uint32_t numberOfEl = getNumberOfElements( block ) - 1;
+        memcpy( block + numOffset, &numberOfEl, intSize );
+}
+
+void setNumberOfElements( uint8_t* block, uint32_t num )
+{
+        memcpy( block + numOffset, &num, intSize );
+}

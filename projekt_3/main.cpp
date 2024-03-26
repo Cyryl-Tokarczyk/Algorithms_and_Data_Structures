@@ -1,0 +1,416 @@
+#include <iostream>
+#include <algorithm>
+#include <string.h>
+
+using namespace std;
+
+constexpr char BlankSpace = '0';
+constexpr int FirstPlayer = 1;
+constexpr int SecondPlayer = 2;
+constexpr int NegaitveInfinity = INT_MIN;
+constexpr int Infinity = INT_MAX;
+
+struct GameInfo
+{
+	// n - y axis
+	// m - x axis
+	int n, m, k, activePlayer;
+	char** gameState;
+};
+
+void allocGameState( GameInfo* GI );
+void deallocGameState( GameInfo* GI );
+void readGameState( GameInfo* GI );
+
+bool isGameOver( GameInfo* GI );
+bool checkForWinningLines( GameInfo* GI, int y, int x );
+bool checkForCombination( GameInfo* GI, int y, int x, int yDir, int xDir );
+bool isOutOfBounds( GameInfo* GI, int y, int x );
+void generateAllPossibleMoves( GameInfo* GI );
+void generateMove( GameInfo* GI, int y, int x );
+int countAllPossibleMoves( GameInfo* GI );
+
+void generateAllPossibleMovesCutIfGameOver( GameInfo* GI );
+bool isWinningMove( GameInfo* GI, int y, int x );
+
+void solveGame( GameInfo* GI );
+int minimax( GameInfo* GI, int alpha = NegaitveInfinity, int beta = Infinity, int y = -1, int x = -1 );
+
+int main()
+{
+	char command[50];
+
+	while (cin >> command)
+	{
+		GameInfo* gameInfo = new GameInfo{};
+
+		if (!strcmp( command, "GEN_ALL_POS_MOV" ))
+		{
+			cin >> gameInfo->n >> gameInfo->m >> gameInfo->k >> gameInfo->activePlayer;
+
+			allocGameState( gameInfo );
+			readGameState( gameInfo );
+
+			generateAllPossibleMoves( gameInfo );
+
+			deallocGameState( gameInfo );
+		}
+		else if (!strcmp( command, "GEN_ALL_POS_MOV_CUT_IF_GAME_OVER" ))
+		{
+			cin >> gameInfo->n >> gameInfo->m >> gameInfo->k >> gameInfo->activePlayer;
+
+			allocGameState( gameInfo );
+			readGameState( gameInfo );
+
+			generateAllPossibleMovesCutIfGameOver( gameInfo );
+
+			deallocGameState( gameInfo );
+		}
+		else if (!strcmp( command, "SOLVE_GAME_STATE" ))
+		{
+			cin >> gameInfo->n >> gameInfo->m >> gameInfo->k >> gameInfo->activePlayer;
+
+			allocGameState( gameInfo );
+			readGameState( gameInfo );
+
+			solveGame( gameInfo );
+
+			deallocGameState( gameInfo );
+		}
+
+		delete gameInfo;
+	}
+
+	return 0;
+}
+
+void allocGameState( GameInfo* GI )
+{
+	GI->gameState = new char* [GI->n];
+	for (int i = 0; i < GI->n; i++)
+	{
+		GI->gameState[i] = new char[GI->m];
+	}
+}
+
+void deallocGameState( GameInfo* GI )
+{
+	for (int i = 0; i < GI->n; i++)
+	{
+		delete[] GI->gameState[i];
+	}
+	delete[] GI->gameState;
+}
+
+void copyGameState( GameInfo* dst, GameInfo* src )
+{
+	for (int i = 0; i < dst->n; i++)
+	{
+		memcpy( dst->gameState[i], src->gameState[i], dst->m * sizeof( **dst->gameState ) );
+	}
+}
+
+void readGameState( GameInfo* GI )
+{
+	for (int i = 0; i < GI->n; i++)
+	{
+		for (int j = 0; j < GI->m /*+ 1*/; j++)
+		{
+			// scanf_s("%c", &(GI->gameState[i][j]), 1 );
+			cin >> GI->gameState[i][j];
+			GI->gameState[i][j] -= BlankSpace;
+		}
+	}
+}
+
+bool isGameOver( GameInfo* GI )
+{
+	for (int i = 0; i < GI->n; i++)
+	{
+		for (int j = 0; j < GI->m; j++)
+		{
+			if (GI->gameState[i][j] != 0)
+			{
+				if (checkForWinningLines( GI, i, j ))
+					return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool checkForWinningLines( GameInfo* GI, int y, int x )
+{
+	// From right to down-left corner => y, x + 1 -> y + 1, x -1
+
+	if (checkForCombination( GI, y, x, 0, 1 )) // Right
+		return true;
+	if (checkForCombination( GI, y, x, 1, 1 )) // Down-right
+		return true;
+	if (checkForCombination( GI, y, x, 1, 0 )) // Down
+		return true;
+	if (checkForCombination( GI, y, x, 1, -1 )) // Down-left
+		return true;
+
+	return false;
+}
+
+bool checkForCombination( GameInfo* GI, int y, int x, int yDir, int xDir )
+{
+	bool emptySpaceBefore = false;
+	if (!isOutOfBounds( GI, y - yDir, x - xDir ) && GI->gameState[y - yDir][x - xDir] == BlankSpace)
+		emptySpaceBefore = true;
+
+	int player = GI->gameState[y][x], combination = 0;
+	while (!isOutOfBounds( GI, y, x ) && GI->gameState[y][x] == player)
+	{
+		combination++;
+		if (combination >= GI->k)
+		{
+			return true;
+		}
+
+		y += yDir;
+		x += xDir;
+		/*if ( combination == GI->k - 1 && emptySpaceBefore && GI->gameState[y][x] == BlankSpace) // Nie dziala
+		{
+			return true;
+		}*/
+	}
+
+	return false;
+}
+
+bool isOutOfBounds( GameInfo* GI, int y, int x )
+{
+	return !(y >= 0 && y < GI->n&&
+		x >= 0 && x < GI->m);
+}
+
+int oppositePlayer( int pl )
+{
+	return pl == 1 ? 2 : 1;
+}
+
+void generateAllPossibleMoves( GameInfo* GI )
+{
+	if (isGameOver( GI ))
+	{
+		cout << 0 << endl << endl;
+
+		return;
+	}
+	cout << countAllPossibleMoves( GI ) << endl << endl;
+
+	for (int i = 0; i < GI->n; i++)
+	{
+		for (int j = 0; j < GI->m; j++)
+		{
+			if (GI->gameState[i][j] == 0)
+			{
+				generateMove( GI, i, j );
+				cout << endl;
+			}
+		}
+	}
+}
+
+void generateMove( GameInfo* GI, int y, int x )
+{
+	for (int i = 0; i < GI->n; i++)
+	{
+		for (int j = 0; j < GI->m; j++)
+		{
+			if (i == y && j == x)
+			{
+				printf( "%d ", GI->activePlayer );
+				//cout << (int) GI->activePlayer << ' ';
+			}
+			else
+			{
+				printf( "%d ", GI->gameState[i][j] );
+				//cout << (int) GI->gameState[i][j] << ' ';
+			}
+		}
+
+		cout << endl;
+	}
+}
+
+int countAllPossibleMoves( GameInfo* GI )
+{
+	int counter = 0;
+
+	for (int i = 0; i < GI->n; i++)
+	{
+		for (int j = 0; j < GI->m; j++)
+		{
+			if (GI->gameState[i][j] == 0)
+			{
+				counter++;
+			}
+		}
+	}
+
+	return counter;
+}
+
+void generateAllPossibleMovesCutIfGameOver( GameInfo* GI )
+{
+	if (isGameOver( GI ))
+	{
+		cout << 0 << endl << endl;
+
+		return;
+	}
+
+	for (int i = 0; i < GI->n; i++)
+	{
+		for (int j = 0; j < GI->m; j++)
+		{
+			if (GI->gameState[i][j] == 0)
+			{
+				if (isWinningMove( GI, i, j ))
+				{
+					cout << '1' << endl;
+					generateMove( GI, i, j );
+					return;
+				}
+			}
+		}
+	}
+
+	generateAllPossibleMoves( GI );
+}
+
+bool isWinningMove( GameInfo* GI, int y, int x )
+{
+	GameInfo newGI = *GI;
+	// Copying array
+	allocGameState( &newGI );
+	// memcpy( newGI.gameState, GI->gameState, (newGI.n * newGI.m)*sizeof(*newGI.gameState) ); // przekopiwuje wszystkie wskazniki
+	copyGameState( &newGI, GI );
+	newGI.gameState[y][x] = newGI.activePlayer;
+
+	if (isGameOver(&newGI))
+	{
+		deallocGameState( &newGI );
+
+		return true;
+	}
+
+	deallocGameState( &newGI );
+
+	return false;
+}
+
+void solveGame( GameInfo* GI )
+{
+	int result = minimax( GI );
+
+	switch (result)
+	{
+	case -1:
+		cout << "FIRST_PLAYER_WINS" << endl;
+		break;
+	case 0:
+		cout << "BOTH_PLAYERS_TIE" << endl;
+		break;
+	case 1:
+		cout << "SECOND_PLAYER_WINS" << endl;
+		break;
+	default:
+		break;
+	}
+}
+
+
+//
+// Returns -1 when player one wins, 0 when it's a tie and 1 when second player wins
+//
+int minimax( GameInfo* GI, int alpha, int beta, int y, int x )
+{
+	GameInfo newGI = *GI;
+	allocGameState( &newGI );
+	copyGameState( &newGI, GI );
+
+	if (!isOutOfBounds( GI, y, x ))
+	{
+		newGI.gameState[y][x] = newGI.activePlayer;
+		newGI.activePlayer = oppositePlayer( newGI.activePlayer );
+	}
+
+	if (isGameOver(&newGI))
+	{
+		deallocGameState( &newGI );
+		if (newGI.activePlayer == SecondPlayer) // That means that player one ended with a winning move
+			return -1;
+		else
+			return 1;
+	} 
+	else if (countAllPossibleMoves( &newGI ) == 0) // No possible moves and no player has won => a tie
+	{
+		deallocGameState( &newGI );
+		return 0;
+	}
+
+	if (newGI.activePlayer == FirstPlayer)
+	{
+		bool toPrune = false;
+		int best = Infinity;
+
+		for (int i = 0; i < GI->n; i++)
+		{
+			for (int j = 0; j < GI->m; j++)
+			{
+				if (newGI.gameState[i][j] == 0)
+				{
+					int evaluation = minimax( &newGI, alpha, beta, i, j );
+					best = min( best, evaluation );
+					beta = min( beta, evaluation );
+					if (beta <= alpha)
+					{
+						toPrune = true;
+						break;
+					}
+				}
+			}
+
+			if (toPrune)
+				break;
+		}
+
+		deallocGameState( &newGI );
+		return best;
+	}
+	else
+	{
+		bool toPrune = false;
+		int best = NegaitveInfinity;
+
+		for (int i = 0; i < GI->n; i++)
+		{
+			for (int j = 0; j < GI->m; j++)
+			{
+				if (newGI.gameState[i][j] == 0)
+				{
+					int evaluation = minimax( &newGI, alpha, beta, i, j );
+					best = max( best, evaluation );
+					alpha = max( alpha, evaluation );
+					if (beta <= alpha)
+					{
+						toPrune = true;
+						break;
+					}
+				}
+			}
+
+			if (toPrune)
+				break;
+		}
+
+		deallocGameState( &newGI );
+		return best;
+	}
+}
